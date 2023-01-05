@@ -1,4 +1,5 @@
-//! `CyclesPerByte` measures clock cycles using the x86 or x86_64 `rdtsc` instruction.
+//! `CyclesPerByte` measures clock cycles using the `rdtsc` instruction on x86
+//! and x86_64 and the `cntfrq` instruction on aarch64.
 //!
 //! ```rust
 //! # fn fibonacci_slow(_: usize) {}
@@ -29,15 +30,19 @@ use criterion::{
     measurement::{Measurement, ValueFormatter},
     Throughput,
 };
+#[cfg(target_arch = "aarch64")]
+use std::arch::asm;
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-compile_error!("criterion-cycles-per-byte currently relies on x86 or x86_64.");
+#[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
+compile_error!("criterion-cycles-per-byte currently relies on x86, x86_64, or aarch64.");
 
-/// `CyclesPerByte` measures clock cycles using the x86 or x86_64 `rdtsc` instruction. `cpb` is
-/// the preferred measurement for cryptographic algorithms.
+/// `CyclesPerByte` measures clock cycles using the `rdtsc` instruction on x86
+/// and x86_64 and the `cntfrq` instruction on aarch64. `cpb` is the preferred
+/// measurement for cryptographic algorithms.
 pub struct CyclesPerByte;
 
 // WARN: does not check for the cpu feature; but we'd panic anyway so...
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 fn rdtsc() -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
@@ -50,16 +55,34 @@ fn rdtsc() -> u64 {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn cntfrq() -> u64 {
+    // Adapted from https://github.com/google/benchmark/blob/1bd8098d3d5b7aa8e305e57b2451ab8f98a58965/src/cycleclock.h#L141-L148
+    // h/t https://users.rust-lang.org/t/portable-way-to-measure-time-without-calling-the-os/44974
+    let virtual_timer_value: u64;
+    unsafe {
+        asm!("mrs {}, cntvct_el0", out(reg) virtual_timer_value);
+    }
+    virtual_timer_value
+}
+
+fn now() -> u64{
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+        return rdtsc();
+#[cfg(target_arch = "aarch64")]
+        return cntfrq();
+}
+
 impl Measurement for CyclesPerByte {
     type Intermediate = u64;
     type Value = u64;
 
     fn start(&self) -> Self::Intermediate {
-        rdtsc()
+        now()
     }
 
     fn end(&self, i: Self::Intermediate) -> Self::Value {
-        rdtsc().saturating_sub(i)
+        now().saturating_sub(i)
     }
 
     fn add(&self, v1: &Self::Value, v2: &Self::Value) -> Self::Value {
